@@ -236,8 +236,6 @@ def parse_mebx(mp4_file, offset):
     box_list = find_child_box_offset(mp4_file, child_box_offset, child_box_size)
 
     for child_info in box_list:
-        #########################################################################################################################
-        #아직 keys 형태가 다른걸 어떻게 처리할 지 몰라서 이렇게 남겨놓음
         temp['mebx']['{}'.format(child_info[0])] = {}
         
     return temp
@@ -500,9 +498,6 @@ def parse_mdta(mp4_file, current_box):
     mdta_data = data_decoder.decode(mdta_data)
     return mdta_data
 
-#iPhone 기기 식별 정보가 남는 곳이라서 iPhone 기준으로 파싱 방법을 만들었음.
-#그래서 타 기기에서 ilst박스가 나왔을 때 파싱 방법이 맞지 않아 오류가 발생할 수 있음.
-#ilst 박스를 파싱하는 함수 - 사용 중
 def parse_ilst(mp4_file, offset):
     box_list = []
     box_size = int(mp4_file[offset:offset+4].hex(), 16)
@@ -529,10 +524,6 @@ def parse_YITH(mp4_file, current_box):
     meta_attribute.update(data)
     return {}
 
-#iPhone 기기 식별 정보가 남는 곳이라서 iPhone 기준으로 파싱 방법을 만들었음.
-#그래서 타 기기에서 data박스가 나왔을 때 파싱 방법이 맞지 않아 오류가 발생할 수 있음.
-#삼성 동영상의 경우 utf-8로 디코딩이 안되는 값이 ilst의 data 박스의 값으로 들어간 경우를 식별함.
-#따라서 if로 분기문 만들어서 저장하였음.
 #data 박스를 파싱하는 함수 - 사용 중
 def parse_data(mp4_file, offset):
     box_size = int(mp4_file[offset:offset+4].hex(), 16)

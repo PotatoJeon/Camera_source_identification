@@ -194,7 +194,6 @@ def parse_h265_mdat(file_addr):
 
     os.remove(output_file)
 
-
     nal = []
     nal_unit = []
     vps_line=[]
@@ -211,6 +210,7 @@ def parse_h265_mdat(file_addr):
     lines =  result_as_string.splitlines()
 
     #같은 기기에서도 설정에 따라 달라질 수 있는 SPS 구성 요소
+    need_del_keys =[]
     need_del_keys = ['profile_tier_level( 1, vps_max_sub_layers_minus1 )',
                     '  general_tier_flag', 
                     '  general_level_idc', 
@@ -222,6 +222,7 @@ def parse_h265_mdat(file_addr):
                     'uniform_spacing_flag',
                     'conformance_window_flag']
     
+
     for i in range(len(lines)):
         if "nal->nal" in lines[i]: # 
              #print(lines[i])
@@ -276,7 +277,10 @@ def parse_h265_mdat(file_addr):
     PPS_Frame = []
     I_Frame = []
     P_Frame = []
+    broken_link_access = []
+    reserved_future_use = []
     ETC_Frame = []
+    system_use =[]
 
 
     for i in nal_type:
@@ -300,6 +304,29 @@ def parse_h265_mdat(file_addr):
                 PPS_Frame.append(h265_to_binary(i))
                 PPS_Frame.sort()
             kinds_of_frame['PPS'] = PPS_Frame
+
+        elif i >= 41 and i <= 47:
+            gop_structure.append("RFU")
+            if h265_to_binary(i) not in PPS_Frame:
+                reserved_future_use.append(h265_to_binary(i))
+                reserved_future_use.sort()
+            kinds_of_frame['RFU'] = reserved_future_use
+        
+        elif i >= 48 and i <= 63:
+            gop_structure.append("SU")
+            if h265_to_binary(i) not in PPS_Frame:
+                reserved_future_use.append(h265_to_binary(i))
+                reserved_future_use.sort()
+            kinds_of_frame['SU'] = system_use
+
+
+        elif i in [16, 17, 18]:
+            gop_structure.append("BLA")
+            if h265_to_binary(i) not in I_Frame:
+                broken_link_access.append(h265_to_binary(i))
+                broken_link_access.sort()
+
+            kinds_of_frame['BLA'] = broken_link_access
 
         elif i in [19, 20]:
             gop_structure.append("I")
@@ -341,9 +368,10 @@ def parse_h265_mdat(file_addr):
 
     return kinds_of_frame, gop_structure, vps, sps, pps
 
-#result = parse_h265_mdat("D:/졸업논문/Galaxy Z Flip 5 종원/20240412_1220331대1.mp4")
+#result = parse_h265_mdat("D:/졸업논문/Galaxy Z Flip 5 종원/20240412_12195016대9FHD30.mp4")
+#result = parse_h265_mdat("D:/졸업논문/Galaxy Z Flip 5 종원/2160.3840.UHD.30FPS.mp4")
 
-#result = parse_h264_mdat("/mnt/d/졸업논문/iPhone_15_Pro/IMG_5761.mov")
+#result = parse_h264_mdat("D:/졸업논문/illegal_camera_dataset/AUGENTIX/AYS-269505-LBGBB(smart camera)/19700101000020_32_S.mp4")
 #print(result)
 
 # D46_L3S4C4.mp4 이거 이상함

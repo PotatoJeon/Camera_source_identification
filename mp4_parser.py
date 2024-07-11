@@ -4,13 +4,59 @@ import get_exif_info
 import data_decoder
 import mdat_analyze
 import json
+import re
+
+file_addr = None
 
 video_attribute = {} #영상 재생 관련 정보 저장 딕셔너리
 meta_attribute ={}  #영상 메타데이터 관련 정보 저장 딕셔너리
+meta_atom = {} #영상 
+os_version = {}
 udta = {} #udta 박스 내 자식박스 목록 저장 딕셔너리
-uuid = {} #uuid 박스 내 자식박스 목록 저장 딕셔너리
+#uuid = {} #uuid 박스 내 자식박스 목록 저장 딕셔너리
+specified_model_name = {}
+time_location = {}
+etc = {}
+
+def get_all_keys(d, parent_key='', keys=set()):
+    if isinstance(d, dict):
+        for k, v in d.items():
+            full_key = f"{parent_key}.{k}" if parent_key else k
+            keys.add(full_key)
+            if isinstance(v, dict):
+                get_all_keys(v, full_key, keys)
+    return keys
+
+def file_analyze(mp4_file, file_size, file_address):
+    
+    global file_addr
+
+    file_addr = file_address
+
+    file = {}
+    grand_parent_box = find_child_box_offset(mp4_file, 0, file_size)
+    original_result = make_rough_dict(mp4_file, grand_parent_box, file)
+    
+    cropped_result = get_all_keys(original_result)
+    need_del_element = []   #사용자 설정에 의해 달라질 수 있는 박스 제거 위하여
+
+    #특정 Atom을 제거하는 이유는 다음과 같음
+    #udta -> defalut로 생성되는 경우도 있지만, 좌표 설정을 켰을 때, 함께 생성되고 껐을 때, 함께 사라지는 경우를 발견함. -> 같은 기기에서도 설정에 따라 다르게 나올 수 있음.
+    #edts -> Galaxy S21에서 영상 화면 비율을 변경하여 촬영할 때 생기는 경우를 발견 함 -> 같은 기기에서도 설정에 따라 다르게 나올 수 있음.
+    #stco, co64 -> \vision_dataset\D03_Huawei_P9 에서 알 수 없는 원인으로 co64 Atom을 생성하던 기기가 stco Atom을 생성하는 경우도 발생하였음. -> 아직까지 원인파악 불가하였음
+    #free -> atom 위치 정렬을 위하여 사용되는 것인지 간혹, 기기에서 불필요하여 생략하는 경우를 확인한 바 있음.
 
 
+    for element in cropped_result:
+        for atom in ['udta', 'edts', 'stco', 'co64', 'free']: 
+            if atom in str(element):
+                need_del_element.append(str(element))
+                break
+    
+    for element in need_del_element:
+        cropped_result.remove(element)
+
+    return original_result, cropped_result, video_attribute, specified_model_name, time_location
 #ftyp 박스를 파싱하는 함수 - 사용 중
 def parse_ftyp(mp4_file, current_box):
     major_brand=mp4_file[current_box[1]+8:current_box[1]+12]
@@ -236,6 +282,8 @@ def parse_mebx(mp4_file, offset):
     box_list = find_child_box_offset(mp4_file, child_box_offset, child_box_size)
 
     for child_info in box_list:
+        #########################################################################################################################
+        #아직 keys 형태가 다른걸 어떻게 처리할 지 몰라서 이렇게 남겨놓음
         temp['mebx']['{}'.format(child_info[0])] = {}
         
     return temp
@@ -289,43 +337,61 @@ def parse_hvc1(mp4_file, offset):
 def parse_avcC(mp4_file, offset):
 
     video_attribute['codec'] = "h.264"
+    mdat = mdat_analyze.parse_h264_mdat(file_addr)
+    
     #sps
+    h264_sps_arameter = str(mdat[2])
     sps_offset = offset+14
     sps_size = int(mp4_file[sps_offset:sps_offset+2].hex(),16)
     sps_data = mp4_file[sps_offset+2:sps_offset+2+sps_size]
     hex_sps = ' '.join([f"{byte:02x}" for byte in sps_data])
     video_attribute['sps'] = hex_sps
+    video_attribute['sps_parameter'] = h264_sps_arameter
 
     #pps
+    h264_pps_arameter = str(mdat[3])
     pps_offset = sps_offset+2+sps_size+1
     pps_size = int(mp4_file[pps_offset:pps_offset+2].hex(),16)
     pps_data = mp4_file[pps_offset+2:pps_offset+2+pps_size]
     hex_pps = ' '.join([f"{byte:02x}" for byte in pps_data])
     video_attribute['pps'] = hex_pps
+    video_attribute['pps_parameter'] = h264_pps_arameter
+    video_attribute['NAL_Unit'] = str(mdat[0])
+    video_attribute['Frame_Structure'] = str(mdat[1])
+
+    codec = "h.264"
+
     return {}
 
 #hvcC 박스를 파싱하는 함수 - 사용 중
 def parse_hvcC(mp4_file, offset):
 
     video_attribute['codec'] = "h.265"
+    mdat = mdat_analyze.parse_h265_mdat(file_addr)
+
     box_size = int(mp4_file[offset:offset+4].hex(), 16)
 
+
     for y in range(box_size):
-    #vps
+        #vps
         if mp4_file[offset + y : offset + y + 2] in [b'\xa0\x00', b'\x20\x00'] and mp4_file[offset+y+5] == 0x40:
             vps_offset = offset + y + 3
             vps_size = int(mp4_file[vps_offset:vps_offset+2].hex(), 16)
             vps_data = mp4_file[vps_offset+2:vps_offset + 2 + vps_size]
             hex_vps = ' '.join([f"{byte:02x}" for byte in vps_data])
             video_attribute['vps'] = hex_vps
-                        
-                #sps
+            h265_vps_parameter=str(mdat[2])
+            video_attribute['vps_parameter'] = h265_vps_parameter
+
+        #sps
         elif mp4_file[offset + y : offset + y + 2] in [b'\xa1\x00', b'\x21\x00'] and mp4_file[offset+y+5] == 0x42:
             sps_offset = offset + y + 3
             sps_size = int(mp4_file[sps_offset:sps_offset+2].hex(), 16)
             sps_data = mp4_file[sps_offset+2:sps_offset + 2 + sps_size]
             hex_sps = ' '.join([f"{byte:02x}" for byte in sps_data])
             video_attribute['sps'] = hex_sps
+            h265_sps_parameter=str(mdat[3])
+            video_attribute['sps_parameter'] = h265_sps_parameter
                         
         #pps
         elif mp4_file[offset + y : offset + y + 2] in [b'\xa2\x00', b'\x22\x00'] and mp4_file[offset+y+5] == 0x44:
@@ -334,12 +400,18 @@ def parse_hvcC(mp4_file, offset):
             pps_data = mp4_file[pps_offset+2:pps_offset + 2 + pps_size]
             hex_pps = ' '.join([f"{byte:02x}" for byte in pps_data])
             video_attribute['pps'] = hex_pps
+            h265_pps_parameter=str(mdat[4])
+            video_attribute['pps_parameter'] = h265_pps_parameter
+
+    video_attribute['NAL_Unit'] = str(mdat[0])
+    video_attribute['Frame_Structure'] = str(mdat[1])
+
+    codec = "h.265"
 
     return {}
 
 #stts 박스를 파싱하는 함수 - 사용 안함
 def parse_stts(mp4_file, offset):
-    
     
     temp={}
     version = mp4_file[offset+8]
@@ -476,7 +548,6 @@ def parse_hdlr(mp4_file, current_box):
 
     temp = handler_type
 
-    #meta_attribute['handler_type'] = temp
     return temp
 
 #keys 박스를 파싱하는 함수 - 사용 중
@@ -489,7 +560,11 @@ def parse_keys(mp4_file, offset):
     box_list = find_child_box_using_entry_count(mp4_file, child_box_offset, entry_count, box_size)
     temp = {}
     rough = make_rough_dict(mp4_file, box_list, temp)
-    #detail = make_detail_dict(mp4_file, box_list, temp)
+    
+    keys = list(rough.values())
+
+    for key in keys:
+        meta_atom['{}'.format(key)] = ""
 
     return {}
 
@@ -498,6 +573,9 @@ def parse_mdta(mp4_file, current_box):
     mdta_data = data_decoder.decode(mdta_data)
     return mdta_data
 
+#iPhone 기기 식별 정보가 남는 곳이라서 iPhone 기준으로 파싱 방법을 만들었음.
+#그래서 타 기기에서 ilst박스가 나왔을 때 파싱 방법이 맞지 않아 오류가 발생할 수 있음.
+#ilst 박스를 파싱하는 함수 - 사용 중
 def parse_ilst(mp4_file, offset):
     box_list = []
     box_size = int(mp4_file[offset:offset+4].hex(), 16)
@@ -514,7 +592,7 @@ def parse_ilst(mp4_file, offset):
     temp = {}
     rough = make_rough_dict(mp4_file, box_list, temp)
 
-    meta_attribute.update(rough)
+    #print(rough)
     return {}
 
 def parse_YITH(mp4_file, current_box):
@@ -529,13 +607,40 @@ def parse_data(mp4_file, offset):
     box_size = int(mp4_file[offset:offset+4].hex(), 16)
     data = mp4_file[offset+16:offset+box_size]
     data = data_decoder.decode(data)
+    if data == "":
+        data = " "
+    
+    for key in meta_atom.keys():
+        if meta_atom[f'{key}'] == "":
+            meta_atom[f'{key}'] = data
+            break
+
+    print(meta_atom)
+
+    keys = meta_atom.keys()
+    for key in keys:
+        if key == "com.android.version":
+            os_version['data_version'] = meta_atom['com.android.version']
+
+        elif key == "com.apple.quicktime.software":
+            os_version['data_version'] = meta_atom['com.apple.quicktime.software']
+
+        elif key == "com.apple.quicktime.model":
+            specified_model_name['data_model'] = meta_atom['com.apple.quicktime.model']
+
+        elif key == "com.apple.quicktime.location.ISO6709":
+            time_location['data_location'] = meta_atom['com.apple.quicktime.location.ISO6709']
+
+        elif key == "com.apple.quicktime.creationdate":
+            time_location['data_datetime'] = meta_atom['com.apple.quicktime.creationdate']
+
     return data
 
 def parse_xyz(mp4_file, current_box):
     end_offset = current_box[1] + current_box[2]
     xyz = mp4_file[current_box[1]+12:end_offset]
     xyz=data_decoder.decode(xyz)
-    meta_attribute['xyz'] = xyz
+    time_location['xyz_location'] = xyz
     return xyz
 
 def parse_swr(mp4_file, current_box):
@@ -549,7 +654,7 @@ def parse_day(mp4_file, current_box):
     end_offset = current_box[1] + current_box[2]
     date = mp4_file[current_box[1]+12:end_offset]
     date=data_decoder.decode(date)
-    meta_attribute['day'] = date 
+    time_location['day_datetime'] = date 
     return date
 
 def parse_mak(mp4_file, current_box):
@@ -563,7 +668,9 @@ def parse_mod(mp4_file, current_box):
     end_offset = current_box[1] + current_box[2]
     mod = mp4_file[current_box[1]+12:end_offset]
     mod=data_decoder.decode(mod)
-    meta_attribute['mod'] = mod 
+    meta_attribute['mod'] = mod
+    specified_model_name['mod_model'] = mod
+
     return mod
 
 def parse_mdl(mp4_file, current_box):
@@ -571,6 +678,8 @@ def parse_mdl(mp4_file, current_box):
     mdl = mp4_file[current_box[1]+8:end_offset]
     mdl=data_decoder.decode(mdl)
     meta_attribute['mdl'] = mdl
+    specified_model_name['mdl_model'] = mdl
+
     return mdl
 
 def parse_modl(mp4_file, current_box):
@@ -579,6 +688,7 @@ def parse_modl(mp4_file, current_box):
     model_name = mp4_file[model_name_start_offset:end_offset]
     model_name=data_decoder.decode(model_name)
     meta_attribute['modl'] = model_name
+    specified_model_name['modl_model'] = model_name
     return model_name
 
 #canon와 sony에서 확인되는 박스 였음.
@@ -591,7 +701,7 @@ def parse_uuid(mp4_file, current_box):
     box_list = find_child_box_offset(mp4_file, children_start_offset, current_box[2]-24)
     temp = {}
     rough = make_rough_dict(mp4_file, box_list, temp)
-    uuid.update(rough)
+    #uuid.update(rough)
     return {}
 
 def parse_CNDA(mp4_file, current_box):
@@ -605,6 +715,14 @@ def parse_CNDA(mp4_file, current_box):
     jpeg_file.close()
     exif = get_exif_info.get_image_exif(image_addr)
     
+    if 'DateTime' in exif.keys():
+        specified_model_name['CNDA_Model'] = exif['Model']
+    if 'DateTime' in exif.keys():
+        time_location['CNDA_datetime'] = exif['DateTime']
+    
+    if 'GPS Position' in exif.keys():
+        time_location['CNDA_location'] = exif['GPS Position']
+
     meta_attribute.update(exif)
     os.remove(image_addr)
     return exif
@@ -613,15 +731,14 @@ def parse_auth(mp4_file, current_box):
     end_offset = current_box[1]+current_box[2]
     device = mp4_file[current_box[1]+8:end_offset]    
     device = data_decoder.decode(device)
-    meta_attribute['auth']=device
-
+    specified_model_name['auth_model'] = device
     return device
 
 def parse_CAME(mp4_file, current_box):
     end_offset = current_box[1]+current_box[2]
     device = mp4_file[current_box[1]+8:end_offset]    
     device=data_decoder.decode(device)
-    meta_attribute['CAME']=device
+    specified_model_name['CAME_model'] = device
     return device
 
 def parse_FIRM(mp4_file, current_box):
@@ -763,9 +880,10 @@ def find_child_box_offset(mp4_file, start_offset, box_size):
 #화웨이 P9의 영상 대부분은 co64를 사용했는데 영상 한개에서 stco를 사용하는 것을 확인, 상황에 따라 바뀔 수도 있다고 판단.
 
 #ver2는 udta, edts, stco, co64만 제거한 버전
-def make_rough_dict(mp4_file, box_list, dict):
+def make_rough_dict(mp4_file, box_list, dict): #file_addr이 필요없는 경우가 있어서 defualt를 None으로 설정함
     keys = dict.keys()
     #print(box_list)
+
 
     for box in box_list:
         same_key = 0
@@ -777,25 +895,25 @@ def make_rough_dict(mp4_file, box_list, dict):
             if box[2] == 8: #박스 사이즈가 8인 애들에 대한 처리
                 dict['{}'.format(box[0])] = {}
             else:
-                dict['{}'.format(box[0])] = identify_box(mp4_file, box)
+                dict['{}'.format(box[0])] = identify_box(mp4_file, box, file_addr)
 
         else:
             #augentix 기기의 경우 mdat과 moof가 프레임마다 하나씩 발생하였음.
             #그래서 영상 길이마다 박스 개수가 달라질 것이기에 5개까지만 구조에 포함하도록 만듦 
             if box[0] == 'mdat' or box[0] == 'moof':  
                 if same_key < 5:
-                    dict['{}_{}'.format(box[0], same_key)] = identify_box(mp4_file, box)
+                    dict['{}_{}'.format(box[0], same_key)] = identify_box(mp4_file, box, file_addr)
 
             else:
                 if box[2] == 8: #박스 사이즈가 8인 애들에 대한 처리
                     dict['{}'.format(box[0])] = {}
                 else:
-                    dict['{}_{}'.format(box[0], same_key)] = identify_box(mp4_file, box)
+                    dict['{}_{}'.format(box[0], same_key)] = identify_box(mp4_file, box, file_addr)
 
     return(dict)
 
 #박스 이름을 받고 해당 이름에 맞는 파싱 함수 호출
-def identify_box(mp4_file, current_box):
+def identify_box(mp4_file, current_box, file_addr):
 
     if 'ftyp' in current_box[0] :
         temp = parse_ftyp(mp4_file, current_box)
@@ -838,7 +956,12 @@ def identify_box(mp4_file, current_box):
         return {}
     
     elif 'meta' in current_box[0]:
-        box_list=find_child_box_offset(mp4_file, current_box[1]+8, current_box[2]-8)
+        for i in range(current_box[2]):
+            if mp4_file[current_box[1] + 8 + i : current_box[1] + 12 + i] == b'hdlr': #meta가 오고 데이터가 바로 안나오고 좀 있다가 hdlr이 나오는 meta atom 식별함.
+                meta_data_offset = current_box[1] + 4 + i
+                break
+
+        box_list=find_child_box_offset(mp4_file, meta_data_offset, current_box[2]- 8 - i + 4)
         temp = {}
         rough = make_rough_dict(mp4_file, box_list, temp)
         return rough
@@ -1046,7 +1169,7 @@ def identify_box(mp4_file, current_box):
     
     elif 'mdta' in current_box[0]:
         temp = parse_mdta(mp4_file, current_box)
-        return {}
+        return temp
     
     elif 'ilst' in current_box[0]:
         temp = parse_ilst(mp4_file, current_box[1])
@@ -1126,23 +1249,16 @@ def identify_box(mp4_file, current_box):
         '''        
         return {}
 
-def box_analyze(mp4_file, file_size):
-    file = {}
-    grand_parent_box = find_child_box_offset(mp4_file, 0, file_size)
-    parse_result = make_rough_dict(mp4_file, grand_parent_box, file)
-     
-    return parse_result, video_attribute, meta_attribute, udta, uuid
-
 '''
-file_addr = "/mnt/c/users/jsj97/downloads/IMG_5595.mov"
 with open(file_addr, "rb") as file:
     file_size = get_file_size(file_addr)
     video_data = file.read()
 
 print(file_addr)
-print(box_analyze(video_data, file_size))
+print(file_analyze(video_data, file_size))
 '''
 
+'''
 root_dir = "D:/졸업논문/data_mp4_h26X/"
 
 device_dir = os.listdir(root_dir)
@@ -1209,6 +1325,7 @@ for dir in device_dir: #폴더 넘어가는게 이 반복문
             udta = {}
             uuid = {}
             parsed_result = box_analyze(video_data, file_size)
+
 
             if parsed_result[1]['codec'] == 'h.264':
                 mdat = mdat_analyze.parse_h264_mdat(path)

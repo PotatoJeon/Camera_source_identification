@@ -17,7 +17,8 @@ def get_image_exif(image):
                                'CameraOwnerName', 
                                'BodySerialNumber', 
                                'LensModel',
-                               'LensSerialNumber']
+                               'LensSerialNumber',
+                               'GPS Position']
 
         if tag in owner_identificaion:
             exif_info[f'{tag}'] = f'{data}'
@@ -25,4 +26,3 @@ def get_image_exif(image):
     img.close()
 
     return exif_info
-
